@@ -9,7 +9,86 @@ const frontEl = el('card-front');
 const backEl = el('card-back');
 const noCardsEl = el('no-cards');
 const searchCountEl = el('search-count');
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
 
+// load app state
+const saved = window.loadState && loadState();
+let { decks, cardsByDeckId, activeDeckId, ui } = saved?.state || loadState().state;
+
+// ensure defaults
+decks = decks || [];
+cardsByDeckId = cardsByDeckId || {};
+activeDeckId = activeDeckId || (decks[0]?.id ?? null);
+ui = ui || { isModalOpen: false, activeCardIndex: 0 };
+
+// helpers
+function getActiveDeckCards() {
+  return activeDeckId ? (cardsByDeckId[activeDeckId] || []) : [];
+}
+
+function addDeck(name) {
+  const id = uid();
+  const deck = { id, name, createdAt: Date.now() };
+  decks.push(deck);
+  cardsByDeckId[id] = [];
+  activeDeckId = id;
+  debouncedSave();
+  renderDecks();
+  applyFilter(); // refresh cards view for the new deck
+}
+
+function addCard(front, back) {
+  if (!activeDeckId) return;
+  const card = { id: uid(), front, back, updatedAt: Date.now() };
+  cardsByDeckId[activeDeckId].push(card);
+  ui.activeCardIndex = cardsByDeckId[activeDeckId].length - 1;
+  debouncedSave();
+  render(); // update current view
+}
+
+function editCard(cardId, front, back) {
+  if (!activeDeckId) return;
+  const list = cardsByDeckId[activeDeckId] || [];
+  const c = list.find(x => x.id === cardId);
+  if (!c) return;
+  c.front = front;
+  c.back = back;
+  c.updatedAt = Date.now();
+  debouncedSave();
+  render();
+}
+
+function deleteCard(cardId) {
+  if (!activeDeckId) return;
+  let list = cardsByDeckId[activeDeckId] || [];
+  cardsByDeckId[activeDeckId] = list.filter(x => x.id !== cardId);
+  ui.activeCardIndex = Math.min(ui.activeCardIndex, (cardsByDeckId[activeDeckId].length - 1));
+  debouncedSave();
+  render();
+}
+function renderDecks() {
+  const ul = document.querySelector('.decks-list');
+  if (!ul) return;
+  ul.innerHTML = decks.map(d =>
+    `<li><button class="deck-btn" data-id="${d.id}">${d.name}</button></li>`
+  ).join('');
+  ul.querySelectorAll('.deck-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      switchDeck(btn.dataset.id);
+      renderDecks();
+      applyFilter(el('search')?.value || '');
+      render();
+    });
+    btn.classList.toggle('active', btn.dataset.id === activeDeckId);
+  });
+}
+function switchDeck(id) {
+  if (!decks.find(d => d.id === id)) return;
+  activeDeckId = id;
+  ui.activeCardIndex = 0;
+  debouncedSave();
+  applyFilter(); // ensure the view now shows the selected deck
+}
 // debounce helper
 function debounce(fn, wait = 300) {
   let t;
@@ -38,11 +117,15 @@ try {
     cards = saved.state.cards;
     nextId = saved.state.nextId || (cards.reduce((m, c) => Math.max(m, c.id || 0), 0) + 1);
     filtered = [...cards];
+
   }
 } catch (err) {
   console.warn('Failed to load state:', err);
 }
-
+if (!decks || decks.length === 0) {
+  addDeck('Default Deck');
+}
+renderDecks();
 // render / controls
 function updateSearchCount() {
   const count = filtered.length;
@@ -169,15 +252,12 @@ el('shuffle')?.addEventListener('click', () => {
 });
 
 // create new card
-el('new-card')?.addEventListener('click', () => {
-  const q = prompt('Question:');
-  if (!q) return;
-  const a = prompt('Answer:') || '';
-  const newCard = { id: nextId++, q, a };
-  cards.push(newCard);
+el('new-deck')?.addEventListener('click', () => {
+  const name = prompt('New deck name:');
+  if (!name) return;
+  addDeck(name);
+  renderDecks();
   applyFilter(el('search')?.value || '');
-  index = filtered.findIndex(c => c.id === newCard.id);
-  debouncedSave();
   render();
 });
 
