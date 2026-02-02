@@ -1,0 +1,841 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Potty Superstar Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
+    <style>
+        /* Custom styles for fun, toddler-friendly aesthetics */
+        :root {
+            --primary-color: #6366f1; /* Indigo 500 */
+            --secondary-color: #f97316; /* Orange 500 */
+            --background-color: #eef2ff; /* Indigo 50 */
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--background-color);
+            transition: background-color 0.5s;
+        }
+        .main-button {
+            transition: all 0.1s ease;
+            box-shadow: 0 8px 0 var(--secondary-color), 0 12px 10px rgba(0, 0, 0, 0.2);
+            font-size: 1.5rem;
+            line-height: 2rem;
+            font-weight: 700;
+        }
+        .main-button:active {
+            box-shadow: 0 2px 0 var(--secondary-color), 0 4px 5px rgba(0, 0, 0, 0.2);
+            transform: translateY(6px);
+        }
+        .confetti {
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            background-color: transparent;
+            border-radius: 50%;
+            pointer-events: none;
+            opacity: 0;
+            animation: confetti-fall 2s ease-out forwards;
+        }
+
+        @keyframes confetti-fall {
+            0% { transform: translate(0, 0) rotate(0deg); opacity: 1; }
+            100% { transform: translate(var(--dx), var(--dy)) rotate(var(--rot)); opacity: 0; }
+        }
+
+        /* Responsive layout for mobile-first design */
+        @media (min-width: 640px) {
+            .container {
+                max-width: 700px;
+            }
+        }
+
+        /* Styles for the simulated call screen */
+        .call-screen {
+            background: linear-gradient(135deg, #1f2937, #4b5563);
+            border-radius: 3rem;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.4);
+            animation: ring-pulse 1s infinite alternate;
+        }
+        @keyframes ring-pulse {
+            from { box-shadow: 0 0 0 0 rgba(100, 116, 139, 0.7); }
+            to { box-shadow: 0 0 0 20px rgba(100, 116, 139, 0); }
+        }
+
+        /* --- Egg Timer Styles --- */
+        #egg-container {
+            /* Basic Egg Shape */
+            margin-top: 2rem;
+            position: relative;
+            background-color: #f7e6c4; /* Creamy egg color */
+            border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+            border: 4px solid #cc9966;
+            overflow: hidden;
+            transition: all 0.5s ease;
+        }
+
+        #egg-crack-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            /* Repeating gradient simulates the crack texture */
+            background: repeating-linear-gradient(
+                135deg,
+                #cc9966,
+                #cc9966 2px,
+                #f7e6c4 2px,
+                #f7e6c4 4px
+            );
+            /* This clip-path determines how much of the "crack" is visible, 100% means fully hidden */
+            clip-path: inset(100% 0 0 0);
+            transition: clip-path 1s linear;
+        }
+
+        #egg-reveal {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 80px; /* Big emoji */
+            opacity: 0;
+            transform: scale(0.5);
+            transition: all 0.5s ease-in-out;
+        }
+        /* When the egg cracks, reveal the animal */
+        #egg-container.cracked #egg-reveal {
+            opacity: 1;
+            transform: scale(1);
+        }
+        
+        /* Style for the selected animal card */
+        .animal-card.selected {
+            outline: 4px solid var(--secondary-color);
+            transform: scale(1.05);
+            box-shadow: 0 4px 15px rgba(249, 115, 22, 0.5);
+        }
+    </style>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, onSnapshot, setDoc, updateDoc, collection, getDocs, runTransaction, getDoc, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global Firebase instances
+        window.firebaseApp = null;
+        window.db = null;
+        window.auth = null;
+        window.userId = 'loading';
+        window.appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+        // TTS API Constants
+        window.TTS_API_KEY = ""; // Kept empty, filled by Canvas runtime
+        window.TTS_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${TTS_API_KEY}`;
+        window.RETRY_DELAY = 1000; // Initial retry delay for exponential backoff
+        
+        // Timer Constants
+        const EGG_ANIMAL_EMOJIS = ['🐶', '🐱', '🐰', '🐻', '🐼', '🦊', '🐸', '🦁', '🦉', '🐷', '🦒', '🐒', '🦖', '🦄'];
+        const BANNER_ANIMALS = [
+            { key: 'monkey', emoji: '🐒', name: 'Monkey' },
+            { key: 'tiger', emoji: '🐯', name: 'Tiger' },
+            { key: 'panda', emoji: '🐼', name: 'Panda' },
+            { key: 'unicorn', emoji: '🦄', name: 'Unicorn' },
+            { key: 'robot', emoji: '🤖', name: 'Robot' },
+        ];
+        
+        // Global Tone variables
+        window.timerLoop = null;
+        window.synth = null;
+
+        // --- Tone.js Music Functions ---
+
+        window.setupTimerMusic = () => {
+            if (!window.Tone) return;
+            
+            window.stopTimerMusic();
+
+            try {
+                window.synth = new Tone.PolySynth(Tone.Synth, {
+                    oscillator: { type: "triangle" },
+                    envelope: { attack: 0.005, decay: 0.1, sustain: 0.3, release: 1 },
+                }).toDestination();
+
+                const melody = ["C4", "E4", "G4", "C5"];
+                let index = 0;
+
+                window.timerLoop = new Tone.Loop(time => {
+                    const note = melody[index % melody.length];
+                    window.synth.triggerAttackRelease(note, "4n", time);
+                    index++;
+                }, "4n"); 
+            } catch(e) {
+                console.error("Tone.js setup failed:", e);
+            }
+        };
+
+        window.stopTimerMusic = () => {
+            if (window.timerLoop) {
+                Tone.Transport.stop();
+                window.timerLoop.stop();
+                window.timerLoop.dispose();
+                window.timerLoop = null;
+            }
+            if (window.synth) {
+                window.synth.dispose();
+                window.synth = null;
+            }
+        };
+
+
+        // Utility functions for audio conversion (TTS)
+        window.base64ToArrayBuffer = (base64) => {
+            const binaryString = atob(base64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return bytes.buffer;
+        };
+
+        window.pcmToWav = (pcmData, sampleRate) => {
+            const numChannels = 1;
+            const bytesPerSample = 2; // 16-bit PCM
+
+            const buffer = new ArrayBuffer(44 + pcmData.byteLength);
+            const view = new DataView(buffer);
+
+            // RIFF chunk
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + pcmData.byteLength, true);
+            writeString(view, 8, 'WAVE');
+
+            // FMT chunk
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true); // PCM format
+            view.setUint16(22, numChannels, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * numChannels * bytesPerSample, true);
+            view.setUint16(32, numChannels * bytesPerSample, true); // block align
+            view.setUint16(34, 16, true); // bits per sample
+
+            // DATA chunk
+            writeString(view, 36, 'data');
+            view.setUint32(40, pcmData.byteLength, true);
+
+            // Write PCM data
+            let offset = 44;
+            const pcmView = new Int16Array(pcmData.buffer, pcmData.byteOffset, pcmData.length);
+            for (let i = 0; i < pcmView.length; i++, offset += 2) {
+                view.setInt16(offset, pcmView[i], true);
+            }
+
+            return new Blob([view], { type: 'audio/wav' });
+        };
+
+        function writeString(view, offset, string) {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
+        }
+
+        window.fetchTtsAudio = async (text, retries = 3, voiceName = "Kore") => {
+            const ttsPayload = {
+                contents: [{
+                    parts: [{ text: text }]
+                }],
+                generationConfig: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: { voiceName: voiceName }
+                        }
+                    }
+                },
+                model: "gemini-2.5-flash-preview-tts"
+            };
+
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const response = await fetch(window.TTS_API_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(ttsPayload)
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`TTS API HTTP error: ${response.status}`);
+                    }
+
+                    const result = await response.json();
+                    const part = result?.candidates?.[0]?.content?.parts?.[0];
+                    const audioData = part?.inlineData?.data;
+                    const mimeType = part?.inlineData?.mimeType;
+
+                    if (audioData && mimeType && mimeType.startsWith("audio/L16")) {
+                        const sampleRateMatch = mimeType.match(/rate=(\d+)/);
+                        const sampleRate = sampleRateMatch ? parseInt(sampleRateMatch[1], 10) : 24000;
+                        return { audioData, sampleRate };
+                    }
+                } catch (error) {
+                    if (i < retries - 1) {
+                        await new Promise(resolve => setTimeout(resolve, window.RETRY_DELAY * Math.pow(2, i)));
+                    } else {
+                        throw error;
+                    }
+                }
+            }
+            throw new Error("Failed to fetch TTS audio data after multiple retries.");
+        };
+
+        window.playTtsAudio = async (text, voiceName = "Kore") => {
+            try {
+                // Wrap text in a tone instruction for consistency
+                const fullText = `Say in a cheerful, encouraging, high-five tone: ${text}`;
+                const { audioData, sampleRate } = await window.fetchTtsAudio(fullText, 3, voiceName);
+                const pcmData = window.base64ToArrayBuffer(audioData);
+                const pcm16 = new Int16Array(pcmData);
+                const wavBlob = window.pcmToWav(pcm16, sampleRate);
+                const audioUrl = URL.createObjectURL(wavBlob);
+                const audio = new Audio(audioUrl);
+                await audio.play();
+                return new Promise(resolve => {
+                    audio.onended = () => {
+                        URL.revokeObjectURL(audioUrl);
+                        resolve();
+                    };
+                    audio.onerror = () => {
+                        URL.revokeObjectURL(audioUrl);
+                        resolve();
+                    };
+                });
+            } catch (e) {
+                console.error("Error playing TTS audio:", e);
+            }
+        };
+
+        // Initialize Firebase and Auth
+        const initializeFirebase = async () => {
+            try {
+                const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+                window.firebaseApp = initializeApp(firebaseConfig);
+                window.db = getFirestore(window.firebaseApp);
+                window.auth = getAuth(window.firebaseApp);
+                setLogLevel('Debug');
+
+                let authAttempt = 0;
+                while (authAttempt < 5) {
+                    try {
+                        const __initial_auth_token = typeof window.__initial_auth_token !== 'undefined' ? window.__initial_auth_token : undefined;
+
+                        if (__initial_auth_token) {
+                            await signInWithCustomToken(window.auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(window.auth);
+                        }
+                        break;
+                    } catch (e) {
+                        authAttempt++;
+                        await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, authAttempt)));
+                        if (authAttempt >= 5) throw e;
+                    }
+                }
+
+
+                onAuthStateChanged(window.auth, (user) => {
+                    window.userId = user ? user.uid : crypto.randomUUID();
+                    document.getElementById('user-id-display').textContent = `User ID: ${window.userId}`;
+                    window.setupSnapshotListener();
+                });
+                
+                window.setupTimerMusic();
+
+            } catch (e) {
+                console.error("Firebase Initialization Failed:", e);
+                document.getElementById('status-message').textContent = 'Error: Firebase failed to initialize.';
+            }
+        };
+
+        // Firestore Listener Setup
+        window.setupSnapshotListener = () => {
+            if (!window.db || !window.userId || window.userId === 'loading') return;
+
+            const trackerRef = doc(window.db, 'artifacts', window.appId, 'users', window.userId, 'potty_data', 'tracker');
+
+            onSnapshot(trackerRef, (docSnap) => {
+                const app = document.getElementById('app');
+                const loadingMessage = document.getElementById('status-message');
+
+                if (docSnap.exists()) {
+                    window.trackerData = docSnap.data();
+                } else {
+                    // Initialize document if it doesn't exist. Set default animal.
+                    window.trackerData = { count: 0, history: [], selectedAnimalKey: 'monkey' };
+                    setDoc(trackerRef, window.trackerData).catch(e => console.error("Error initializing doc:", e));
+                }
+
+                // Ensure selectedAnimalKey exists (for old documents)
+                if (!window.trackerData.selectedAnimalKey) {
+                     window.trackerData.selectedAnimalKey = 'monkey';
+                }
+
+                // Update UI
+                window.updateUI();
+
+                // Hide loading message
+                if (loadingMessage) loadingMessage.classList.add('hidden');
+                if (app) app.classList.remove('hidden');
+
+            }, (error) => {
+                console.error("Firestore Listener Error:", error);
+                document.getElementById('status-message').textContent = 'Error: Could not load data.';
+            });
+        };
+
+
+        // Function to update the UI based on data
+        window.updateUI = () => {
+            const countDisplay = document.getElementById('success-count');
+            const historyList = document.getElementById('history-list');
+            const appTitle = document.getElementById('app-title');
+            const { count, history, selectedAnimalKey } = window.trackerData;
+
+            // 1. Update App Title/Banner Emoji
+            const selectedAnimal = BANNER_ANIMALS.find(a => a.key === selectedAnimalKey) || BANNER_ANIMALS[0];
+            appTitle.innerHTML = `Potty Superstar! ${selectedAnimal.emoji}`;
+
+            // 2. Render Animal Selector
+            window.renderAnimalSelector(selectedAnimalKey);
+
+            // 3. Update Count Display
+            countDisplay.textContent = count;
+
+            // 4. Update History List (show latest 5)
+            historyList.innerHTML = '';
+            const latestHistory = history.slice(-5).reverse(); // Show latest 5
+
+            if (latestHistory.length === 0) {
+                historyList.innerHTML = '<li class="text-center italic text-gray-500 p-2">No successes logged yet. Go SuperKid!</li>';
+            } else {
+                latestHistory.forEach(item => {
+                    const li = document.createElement('li');
+                    const date = new Date(item.timestamp);
+                    const timeString = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+
+                    let icon = '';
+                    let color = 'text-green-600';
+                    let text = 'Potty Success';
+
+                    if (item.type === 'poo') {
+                        icon = '💩';
+                        color = 'text-amber-700';
+                        text = 'Poo Success';
+                    } else if (item.type === 'pee') {
+                        icon = '💦';
+                        text = 'Pee Success';
+                    } else if (item.type === 'accident') {
+                        icon = '😔';
+                        color = 'text-red-500';
+                        text = 'Accident (It\'s okay)';
+                    } else {
+                        icon = '🚽';
+                        text = 'Potty Success';
+                    }
+
+                    li.className = 'flex justify-between items-center p-2 border-b last:border-b-0';
+                    li.innerHTML = `
+                        <span class="text-xl">${icon}</span>
+                        <span class="font-medium ${color}">${text}</span>
+                        <span class="text-gray-500 text-sm">${timeString}</span>
+                    `;
+                    historyList.appendChild(li);
+                });
+            }
+        };
+
+        // Function to render the selectable animal cards
+        window.renderAnimalSelector = (selectedKey) => {
+            const container = document.getElementById('animal-selector-container');
+            container.innerHTML = '';
+
+            BANNER_ANIMALS.forEach(animal => {
+                const isSelected = animal.key === selectedKey;
+                const button = document.createElement('button');
+                button.setAttribute('onclick', `window.selectBannerAnimal('${animal.key}')`);
+                button.className = `animal-card flex flex-col items-center p-2 rounded-xl transition duration-200 focus:outline-none focus:ring-4 focus:ring-orange-300 ${isSelected ? 'selected' : 'bg-gray-100 hover:bg-gray-200'}`;
+                button.innerHTML = `
+                    <span class="text-3xl">${animal.emoji}</span>
+                    <span class="text-xs font-semibold text-gray-700">${animal.name}</span>
+                `;
+                container.appendChild(button);
+            });
+        };
+
+        // Function to update the selected banner animal
+        window.selectBannerAnimal = async (key) => {
+             const trackerRef = doc(window.db, 'artifacts', window.appId, 'users', window.userId, 'potty_data', 'tracker');
+             try {
+                // Play a little confirmation sound (if available)
+                const animalName = BANNER_ANIMALS.find(a => a.key === key)?.name || "New Pal";
+                await window.playTtsAudio(`Hello, ${animalName}! You are my Potty Pal!`, "Puck");
+
+                await updateDoc(trackerRef, {
+                    selectedAnimalKey: key
+                });
+             } catch (e) {
+                console.error("Failed to update selected animal:", e);
+             }
+        };
+
+
+        // Main function to log a success or event
+        window.logSuccess = async (type) => {
+            const button = document.getElementById('main-log-button');
+            const accidentButton = document.getElementById('accident-button');
+            const peeButton = document.getElementById('pee-button');
+            const pooButton = document.getElementById('poo-button');
+            const dialButton = document.getElementById('dial-button');
+            const timerLaunchButton = document.getElementById('timer-launch-button');
+
+            const buttons = [button, accidentButton, peeButton, pooButton, dialButton, timerLaunchButton];
+            buttons.forEach(btn => btn.disabled = true);
+
+
+            const trackerRef = doc(window.db, 'artifacts', window.appId, 'users', window.userId, 'potty_data', 'tracker');
+
+            button.textContent = 'Saving...';
+            
+            // Only celebrate if it's a success, pee, or poo
+            if (type !== 'accident') {
+                window.doCelebration();
+            }
+
+            try {
+                await runTransaction(window.db, async (transaction) => {
+                    const docSnap = await transaction.get(trackerRef);
+                    let data = docSnap.exists() ? docSnap.data() : { count: 0, history: [], selectedAnimalKey: 'monkey' };
+
+                    let newCount = data.count;
+                    let encouragement = "";
+
+                    if (type !== 'accident') {
+                        // Success path: increment count and cheer
+                        newCount = data.count + 1;
+                        encouragement = `Yay! Great job, superstar! You earned star number ${newCount}!`;
+                    } else {
+                        // Accident path: log, but don't increment count, and reassure
+                        newCount = data.count; // stays the same
+                        encouragement = "It's okay, accidents happen! You got this next time, superstar!";
+                    }
+
+                    const newHistory = [
+                        ...(data.history || []),
+                        { timestamp: new Date().toISOString(), type: type }
+                    ];
+
+                    transaction.set(trackerRef, {
+                        count: newCount,
+                        history: newHistory,
+                        selectedAnimalKey: data.selectedAnimalKey || 'monkey'
+                    }, { merge: true });
+
+                    // Play TTS sound effect
+                    await window.playTtsAudio(encouragement);
+
+                });
+            } catch (e) {
+                console.error("Transaction failed:", e);
+                // Optionally show a message to the user that it failed
+            } finally {
+                buttons.forEach(btn => btn.disabled = false);
+                button.innerHTML = '✨ I Used the Potty! ✨';
+            }
+        };
+
+        // Function to simulate a call and play TTS
+        window.dialFriend = async () => {
+            const modal = document.getElementById('call-modal');
+            const modalStatus = document.getElementById('call-status');
+            const dialButton = document.getElementById('dial-button');
+            
+            dialButton.disabled = true;
+
+            // Show and set status
+            modal.classList.remove('hidden');
+            modalStatus.textContent = 'Calling Potty Pal...';
+
+            try {
+                await new Promise(resolve => setTimeout(resolve, 1500)); 
+                modalStatus.textContent = 'Pal Answered!';
+                
+                const encouragement = "Hello, superstar! I'm here to cheer you on! You can do it!";
+                
+                // Play the message and wait for it to finish
+                await window.playTtsAudio(encouragement, "Leda"); // Use a slightly different voice for the "friend"
+
+            } catch (e) {
+                console.error("Dial a Friend failed:", e);
+                modalStatus.textContent = 'Call Failed.';
+                await new Promise(resolve => setTimeout(resolve, 1000)); 
+            } finally {
+                // Hide modal
+                modal.classList.add('hidden');
+                dialButton.disabled = false;
+            }
+        };
+
+        // --- Egg Timer Functions ---
+
+        window.startEggTimer = () => {
+            const modal = document.getElementById('timer-modal');
+            const countdownDisplay = document.getElementById('timer-countdown');
+            const eggContainer = document.getElementById('egg-container');
+            const eggCrackOverlay = document.getElementById('egg-crack-overlay');
+            const eggReveal = document.getElementById('egg-reveal');
+            const timerHeading = document.getElementById('timer-heading');
+            const timerLaunchButton = document.getElementById('timer-launch-button');
+            const mainLogButton = document.getElementById('main-log-button');
+            const crackButton = document.getElementById('crack-button'); // New button
+
+            // Disable main buttons while timer runs
+            timerLaunchButton.disabled = true;
+            mainLogButton.disabled = true;
+
+            // Reset state
+            modal.classList.remove('hidden');
+            eggContainer.classList.remove('cracked');
+            eggCrackOverlay.style.clipPath = 'inset(100% 0 0 0)';
+            eggReveal.innerHTML = '';
+            countdownDisplay.textContent = '60';
+            timerHeading.textContent = 'Time to Hatch!';
+            countdownDisplay.classList.remove('hidden'); // Ensure countdown is visible
+            crackButton.classList.add('hidden'); // Ensure crack button is hidden
+
+            let timeLeft = 60;
+            
+            // Tone.js: Start context and music
+            if (window.Tone) {
+                if (Tone.context.state !== 'running') {
+                    Tone.start();
+                }
+                
+                window.setupTimerMusic();
+                if (window.timerLoop) {
+                    window.timerLoop.start(0);
+                    Tone.Transport.start();
+                }
+            }
+
+
+            const timerInterval = setInterval(() => {
+                timeLeft -= 1;
+                countdownDisplay.textContent = timeLeft;
+
+                // Update crack visual (0% at 60s, 100% at 0s)
+                const crackPercentage = 100 - (timeLeft / 60) * 100;
+                eggCrackOverlay.style.clipPath = `inset(${100 - crackPercentage}% 0 0 0)`;
+
+                if (timeLeft <= 0) {
+                    clearInterval(timerInterval);
+                    
+                    // Tone.js: Stop the music
+                    window.stopTimerMusic(); 
+
+                    // Show the "Crack Now" button instead of revealing immediately
+                    countdownDisplay.classList.add('hidden');
+                    crackButton.classList.remove('hidden');
+                    timerHeading.textContent = 'Time Up! Ready to Hatch?';
+                    
+                    timerLaunchButton.disabled = false;
+                    mainLogButton.disabled = false;
+                }
+            }, 1000);
+        };
+
+        window.revealAnimal = () => {
+            const eggContainer = document.getElementById('egg-container');
+            const eggReveal = document.getElementById('egg-reveal');
+            const timerHeading = document.getElementById('timer-heading');
+            const crackButton = document.getElementById('crack-button');
+            const timerModal = document.getElementById('timer-modal');
+
+            // Hide the crack button now that we are cracking
+            crackButton.classList.add('hidden');
+
+            // 1. Crack the egg visually
+            eggContainer.classList.add('cracked');
+            timerHeading.textContent = 'It Hatched!';
+
+            // 2. Pick a random animal for the surprise egg
+            const randomIndex = Math.floor(Math.random() * EGG_ANIMAL_EMOJIS.length);
+            const animal = EGG_ANIMAL_EMOJIS[randomIndex];
+
+            // 3. Display it
+            eggReveal.innerHTML = animal;
+
+            // Play celebratory sound
+            window.playTtsAudio(`Look! A ${animal} has hatched! What a fun surprise!`);
+            
+            // Automatically close the modal after a few seconds
+            setTimeout(() => {
+                timerModal.classList.add('hidden');
+            }, 5000);
+        };
+
+
+        // Celebration effect (no change)
+        window.doCelebration = () => {
+            const container = document.getElementById('celebration-container');
+            const colors = ['#f87171', '#34d399', '#60a5fa', '#facc15', '#a78bfa']; // Red, Green, Blue, Yellow, Purple
+            const buttonRect = document.getElementById('main-log-button').getBoundingClientRect();
+
+            for (let i = 0; i < 50; i++) {
+                const confetti = document.createElement('div');
+                confetti.className = 'confetti';
+                confetti.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
+
+                // Position near the button center
+                confetti.style.left = `${buttonRect.left + buttonRect.width / 2}px`;
+                confetti.style.top = `${buttonRect.top + buttonRect.height / 2}px`;
+
+                // Randomize trajectory
+                const angle = Math.random() * Math.PI; // 0 to 180 degrees (upwards spread)
+                const speed = 50 + Math.random() * 50; // Speed of confetti
+                const dx = Math.cos(angle) * speed * (Math.random() > 0.5 ? 1 : -1) + (Math.random() * 100 - 50);
+                const dy = -Math.sin(angle) * speed - Math.random() * 100;
+                const rot = Math.random() * 720;
+
+                confetti.style.setProperty('--dx', `${dx}px`);
+                confetti.style.setProperty('--dy', `${dy}px`);
+                confetti.style.setProperty('--rot', `${rot}deg`);
+
+                container.appendChild(confetti);
+
+                // Clean up after animation
+                setTimeout(() => confetti.remove(), 2000);
+            }
+        };
+
+
+        // Start initialization on window load
+        window.onload = initializeFirebase;
+    </script>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center p-4">
+
+    <div id="celebration-container" class="fixed inset-0 z-50 pointer-events-none overflow-hidden"></div>
+
+    <div id="call-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900 bg-opacity-80">
+        <div class="call-screen w-full max-w-sm h-[80vh] md:h-[600px] flex flex-col items-center justify-center p-8">
+            <div class="w-20 h-20 bg-gray-500 rounded-full flex items-center justify-center text-4xl mb-4">
+                📞
+            </div>
+            <p id="call-status" class="text-3xl font-semibold text-white mb-2">Calling Potty Pal...</p>
+            <p class="text-xl text-gray-300 mb-12">Cheering you on!</p>
+            
+            <button class="w-16 h-16 bg-red-600 rounded-full flex items-center justify-center shadow-lg transition duration-200 hover:bg-red-700">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-white transform rotate-135" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a1 1 0 011-1h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5z" />
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <div id="timer-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-indigo-900 bg-opacity-80 backdrop-blur-sm">
+        <div class="w-full max-w-md p-6 bg-white rounded-3xl shadow-2xl text-center">
+            <h2 id="timer-heading" class="text-3xl font-extrabold text-indigo-600 mb-4">Time to Hatch!</h2>
+            <div id="egg-container" class="relative w-40 h-40 mx-auto mb-6">
+                <div id="egg-crack-overlay"></div> 
+                <div id="egg-reveal" aria-label="A random animal"></div>
+            </div>
+            
+            <p id="timer-countdown" class="text-6xl font-black text-gray-700 mb-6">60</p>
+            
+            <button id="crack-button" onclick="window.revealAnimal()"
+                    class="hidden main-button bg-orange-500 hover:bg-orange-600 text-white w-full h-16 rounded-2xl mb-6">
+                🥚 CRACK NOW! 💥
+            </button>
+
+            <button onclick="document.getElementById('timer-modal').classList.add('hidden'); window.stopTimerMusic();" 
+                    class="px-6 py-2 bg-red-500 text-white rounded-xl font-bold shadow-md hover:bg-red-600 transition duration-150">
+                Close Timer
+            </button>
+        </div>
+    </div>
+
+    <div id="status-message" class="text-xl font-semibold text-gray-700 mt-20">
+        Loading Potty Tracker...
+    </div>
+
+    <div id="app" class="container w-full bg-white rounded-3xl shadow-2xl p-6 md:p-10 hidden">
+        <h1 id="app-title" class="text-4xl md:text-5xl font-extrabold text-center text-indigo-700 mb-4">
+            Potty Superstar! 🚽
+        </h1>
+
+        <div class="mb-6">
+            <p class="text-center text-sm font-semibold text-gray-500 mb-2">Choose your Potty Pal:</p>
+            <div id="animal-selector-container" class="grid grid-cols-5 gap-2 border p-2 rounded-xl bg-indigo-50 border-indigo-200">
+                </div>
+        </div>
+        
+        <div class="bg-yellow-100 border-4 border-yellow-500 rounded-2xl p-6 mb-8 text-center shadow-lg">
+            <p class="text-xl font-semibold text-gray-700">Total Stars Earned</p>
+            <div class="flex items-center justify-center mt-2">
+                <span class="text-6xl md:text-8xl text-yellow-500 mr-4">⭐</span>
+                <span id="success-count" class="text-8xl md:text-9xl font-black text-indigo-600">0</span>
+            </div>
+        </div>
+        
+        <div class="flex justify-center space-x-4 mb-6">
+            <button id="dial-button" onclick="window.dialFriend()"
+                class="flex items-center justify-center p-3 bg-fuchsia-400 text-white rounded-full font-bold shadow-md hover:bg-fuchsia-500 transition duration-150 text-sm">
+                <span class="mr-2">📞</span> Potty Pal Call
+            </button>
+            <button id="timer-launch-button" onclick="window.startEggTimer()"
+                class="flex items-center justify-center p-3 bg-teal-400 text-white rounded-full font-bold shadow-md hover:bg-teal-500 transition duration-150 text-sm">
+                <span class="mr-2">⏳</span> Potty Timer
+            </button>
+        </div>
+
+        <button id="main-log-button" onclick="window.logSuccess('success')"
+            class="main-button w-full h-32 md:h-40 bg-indigo-500 text-white rounded-2xl mb-8 hover:bg-indigo-600 focus:outline-none focus:ring-4 focus:ring-indigo-300">
+            ✨ I Used the Potty! ✨
+        </button>
+
+        <div class="grid grid-cols-3 gap-3 mb-8">
+            <button id="pee-button" onclick="window.logSuccess('pee')"
+                class="p-3 bg-sky-200 text-sky-800 rounded-xl font-bold shadow-md hover:bg-sky-300 transition duration-150">
+                💦 Pee
+            </button>
+            <button id="poo-button" onclick="window.logSuccess('poo')"
+                class="p-3 bg-amber-200 text-amber-800 rounded-xl font-bold shadow-md hover:bg-amber-300 transition duration-150">
+                💩 Poo
+            </button>
+            <button id="accident-button" onclick="window.logSuccess('accident')"
+                class="p-3 bg-red-200 text-red-800 rounded-xl font-bold shadow-md hover:bg-red-300 transition duration-150">
+                😔 Had Accident
+            </button>
+        </div>
+
+        <div class="bg-gray-50 rounded-xl p-4 border border-gray-200 shadow-inner">
+            <h2 class="text-xl font-bold text-gray-700 mb-3 border-b pb-2">Recent Victories</h2>
+            <ul id="history-list">
+                </ul>
+        </div>
+
+        <div class="mt-6 text-xs text-gray-400 text-center">
+            <p id="user-id-display">User ID: loading</p>
+            <p>Data stored securely with Firebase Firestore.</p>
+        </div>
+    </div>
+
+</body>
+</html>

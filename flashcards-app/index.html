@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Flashcards App</title>
+
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <h1 class="app-title">Flashcards App</h1>
+        <button
+          id="new-deck"
+          class="btn new-deck"
+          type="button"
+          aria-label="Create new deck"
+        >
+          New Deck
+        </button>
+      </div>
+    </header>
+
+    <div class="container">
+      <aside class="sidebar">
+        <h2>Decks</h2>
+        <ul class="decks-list">
+          <li><a href="#">Deck 1</a></li>
+          <li><a href="#">Deck 2</a></li>
+        </ul>
+      </aside>
+
+      <main class="main">
+        <div class="deck-header">
+          <h2 class="deck-title">My Deck</h2>
+          <div class="deck-toolbar">
+            <label for="search" class="sr-only">Search cards</label>
+            <input id="search" type="search" placeholder="Search cards..." />
+            <span
+              id="search-count"
+              class="search-count"
+              aria-live="polite"
+            ></span>
+            <button id="shuffle" class="btn">🔀 Shuffle</button>
+            <button id="new-card" class="btn">+ New Card</button>
+          </div>
+        </div>
+        <div
+          class="card"
+          id="card"
+          role="button"
+          tabindex="0"
+          aria-label="Card front. Press Enter or Space to flip."
+        >
+          <div class="card-inner">
+            <div class="card-face card-front" id="card-front">Question</div>
+            <div class="card-face card-back" id="card-back">Answer</div>
+          </div>
+
+          <div class="card-actions">
+            <button class="icon edit-card" aria-label="Edit card">✏️</button>
+            <button class="icon delete-card" aria-label="Delete card">
+              🗑️
+            </button>
+          </div>
+        </div>
+        <div id="no-cards" class="no-cards" hidden aria-live="polite">
+          No cards in this deck.
+        </div>
+
+        <div class="card-controls">
+          <button id="prev" class="btn">Prev</button>
+          <button id="flip" class="btn">Flip</button>
+          <button id="next" class="btn">Next</button>
+        </div>
+      </main>
+    </div>
+    <script src="storage.js"></script>
+    <script src="app.js"></script>
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <p>
+          <strong>How to play:</strong>
+          Click a card to <strong>flip</strong> 🔁 • Use
+          <strong>Prev</strong>/<strong>Next</strong> ◀️▶️ to navigate • Press
+          <strong>🔀 Shuffle</strong> to randomize • Add cards with
+          <strong>+ New Card</strong>
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>
